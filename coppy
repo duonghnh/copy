@@ -1,0 +1,49 @@
+import asyncio
+from flask import Flask, request, jsonify
+from app.agent.manus import Manus
+from app.logger import logger
+
+# Khởi tạo Flask app
+app = Flask(__name__)
+
+# Khởi tạo Manus agent
+agent = Manus()
+
+# Định nghĩa route API
+@app.route('/api/process', methods=['POST'])
+async def process_prompt():
+    try:
+        # Lấy dữ liệu từ request JSON
+        data = request.get_json()
+        prompt = data.get('prompt', '').strip()
+
+        if not prompt:
+            logger.warning("Empty prompt provided.")
+            return jsonify({
+                'status': 'error',
+                'message': 'Prompt cannot be empty'
+            }), 400
+
+        logger.warning("Processing your request...")
+        # Chạy agent.run với prompt (dùng await vì nó là async)
+        result = await agent.run(prompt)
+        logger.info("Request processing completed.")
+
+        # Trả về kết quả dạng JSON
+        return jsonify({
+            'status': 'success',
+            'message': 'Request processed successfully',
+            'result': result  # Giả sử agent.run() trả về kết quả dạng chuỗi hoặc dict
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error processing request: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Error: {str(e)}'
+        }), 500
+
+# Chạy Flask app
+if __name__ == "__main__":
+    # Chạy Flask với asyncio để hỗ trợ async
+    app.run(host='0.0.0.0', port=5000, debug=True)
