@@ -1,17 +1,61 @@
 import asyncio
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from app.agent.manus import Manus
 from app.logger import logger
 
 # Khởi tạo Flask app
 app = Flask(__name__)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",  # URL của frontend
+        "methods": ["OPTIONS", "POST"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept"],
+        "supports_credentials": True
+    }
+})
 
 # Khởi tạo Manus agent
 agent = Manus()
 
+# Hàm xử lý output từ agent.run để lấy kết quả cuối cùng
+def process_agent_output(output):
+    """
+    Hàm này xử lý output từ agent.run(prompt) để lấy kết quả cuối cùng.
+    Giả định output là danh sách các bước (steps).
+    """
+    final_result = {"status": "unknown", "content": ""}
+    
+    # Giả sử output là list các bước hoặc string
+    if isinstance(output, list):
+        for step in output:
+            # Tìm bước cuối cùng với 'terminate'
+            if "Observed output of cmd `terminate` executed" in str(step):
+                if "status: success" in str(step):
+                    final_result["status"] = "success"
+            # Tìm nội dung từ file_saver
+            if "Content successfully saved to" in str(step):
+                file_name = str(step).split("saved to")[-1].strip().replace("'", "")
+                try:
+                    with open(file_name, 'r', encoding='utf-8') as f:
+                        final_result["content"] = f.read()
+                except FileNotFoundError:
+                    final_result["content"] = "Result file not found"
+    elif isinstance(output, str):
+        # Nếu output là string, tìm status và nội dung
+        if "status: success" in output:
+            final_result["status"] = "success"
+        final_result["content"] = output  # Giả sử output là nội dung trực tiếp
+    
+    return final_result
+
 # Định nghĩa route API
 @app.route('/api/process', methods=['POST'])
-async def process_prompt():
+def process_prompt():
+    # Vì Flask không hỗ trợ async native, dùng asyncio.run để chạy async trong sync
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     try:
         # Lấy dữ liệu từ request JSON
         data = request.get_json()
@@ -25,16 +69,30 @@ async def process_prompt():
             }), 400
 
         logger.warning("Processing your request...")
-        # Chạy agent.run với prompt (dùng await vì nó là async)
-        result = await agent.run(prompt)
+        # Chạy agent.run với prompt trong asyncio loop
+        result = loop.run_until_complete(agent.run(prompt))
         logger.info("Request processing completed.")
-
+        
+        # Xử lý output để lấy kết quả cuối
+        final_result = process_agent_output(result)
+        
+        # In kết quả để debug
+        print("Raw result from agent:", result)
+        print("Processed final result:", final_result)
+        
         # Trả về kết quả dạng JSON
-        return jsonify({
-            'status': 'success',
-            'message': 'Request processed successfully',
-            'result': result  # Giả sử agent.run() trả về kết quả dạng chuỗi hoặc dict
-        }), 200
+        if final_result["status"] == "success":
+            return jsonify({
+                'status': 'success',
+                'message': 'Request processed successfully',
+                'result': final_result["content"]
+            }), 200
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Processing failed or no valid result',
+                'result': final_result["content"]
+            }), 400
 
     except Exception as e:
         logger.error(f"Error processing request: {e}")
@@ -42,8 +100,9 @@ async def process_prompt():
             'status': 'error',
             'message': f'Error: {str(e)}'
         }), 500
+    finally:
+        loop.close()
 
 # Chạy Flask app
 if __name__ == "__main__":
-    # Chạy Flask với asyncio để hỗ trợ async
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
