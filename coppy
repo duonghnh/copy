@@ -1,5 +1,6 @@
 import asyncio
-from flask import Flask, request, jsonify
+import os
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from app.agent.manus import Manus
 from app.logger import logger
@@ -8,7 +9,7 @@ from app.logger import logger
 app = Flask(__name__)
 CORS(app, resources={
     r"/api/*": {
-        "origins": "*",  # URL của frontend
+        "origins": "*",
         "methods": ["OPTIONS", "POST"],
         "allow_headers": ["Content-Type", "Authorization", "Accept"],
         "supports_credentials": True
@@ -20,44 +21,35 @@ agent = Manus()
 
 # Hàm xử lý output từ agent.run để lấy kết quả cuối cùng
 def process_agent_output(output):
-    """
-    Hàm này xử lý output từ agent.run(prompt) để lấy kết quả cuối cùng.
-    Giả định output là danh sách các bước (steps).
-    """
-    final_result = {"status": "unknown", "content": ""}
+    final_result = {"status": "unknown", "content": "", "file_path": None}
     
-    # Giả sử output là list các bước hoặc string
     if isinstance(output, list):
         for step in output:
-            # Tìm bước cuối cùng với 'terminate'
             if "Observed output of cmd `terminate` executed" in str(step):
                 if "status: success" in str(step):
                     final_result["status"] = "success"
-            # Tìm nội dung từ file_saver
             if "Content successfully saved to" in str(step):
                 file_name = str(step).split("saved to")[-1].strip().replace("'", "")
-                try:
+                if os.path.exists(file_name):
+                    final_result["file_path"] = file_name
                     with open(file_name, 'r', encoding='utf-8') as f:
                         final_result["content"] = f.read()
-                except FileNotFoundError:
+                else:
                     final_result["content"] = "Result file not found"
     elif isinstance(output, str):
-        # Nếu output là string, tìm status và nội dung
         if "status: success" in output:
             final_result["status"] = "success"
-        final_result["content"] = output  # Giả sử output là nội dung trực tiếp
+        final_result["content"] = output
     
     return final_result
 
-# Định nghĩa route API
+# Định nghĩa route API xử lý prompt
 @app.route('/api/process', methods=['POST'])
 def process_prompt():
-    # Vì Flask không hỗ trợ async native, dùng asyncio.run để chạy async trong sync
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     try:
-        # Lấy dữ liệu từ request JSON
         data = request.get_json()
         prompt = data.get('prompt', '').strip()
 
@@ -69,24 +61,24 @@ def process_prompt():
             }), 400
 
         logger.warning("Processing your request...")
-        # Chạy agent.run với prompt trong asyncio loop
         result = loop.run_until_complete(agent.run(prompt))
         logger.info("Request processing completed.")
         
-        # Xử lý output để lấy kết quả cuối
         final_result = process_agent_output(result)
-        
-        # In kết quả để debug
         print("Raw result from agent:", result)
         print("Processed final result:", final_result)
         
-        # Trả về kết quả dạng JSON
         if final_result["status"] == "success":
-            return jsonify({
+            response = {
                 'status': 'success',
                 'message': 'Request processed successfully',
                 'result': final_result["content"]
-            }), 200
+            }
+            # Thêm link tải file nếu file tồn tại
+            if final_result["file_path"]:
+                file_url = f"http://{request.host}/api/download/{os.path.basename(final_result['file_path'])}"
+                response["file_url"] = file_url
+            return jsonify(response), 200
         else:
             return jsonify({
                 'status': 'error',
@@ -102,6 +94,18 @@ def process_prompt():
         }), 500
     finally:
         loop.close()
+
+# Định nghĩa route để tải file
+@app.route('/api/download/<filename>', methods=['GET'])
+def download_file(filename):
+    file_path = os.path.join(os.getcwd(), filename)
+    if os.path.exists(file_path):
+        return send_file(file_path, as_attachment=True)
+    else:
+        return jsonify({
+            'status': 'error',
+            'message': 'File not found'
+        }), 404
 
 # Chạy Flask app
 if __name__ == "__main__":
