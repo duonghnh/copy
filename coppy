@@ -1,2 +1,100 @@
 sk-proj-f5CylQ77yBn3vnu1gixyvk0aI7x7WU0OAmeGgSfqX0VmDhlYcs7bBVX052PQn1UmuxY7bmLPjyT3BlbkFJw4MAU9SNZrCisB8jJlJktu1sgS5KMRsy40NL8rKFrI_QG43g1ruFofAT2k5OWlMkMNbMU7FV
 Lập kế hoạch tổ chức sinh nhật cho 20 người với ngân sách 5 triệu VND tại TP.HCM. Bao gồm: 1. Địa điểm tổ chức (nhà hàng hoặc nhà riêng). 2. Thực đơn chi tiết và chi phí. 3. 3 hoạt động giải trí trong tiệc.
+import asyncio
+import os
+import re
+from flask import Flask, request, jsonify, send_from_directory
+from app.agent.manus import Manus
+from app.logger import logger
+import uuid
+
+app = Flask(__name__)
+
+# Khởi tạo agent một lần khi server khởi động
+agent = Manus()
+
+# Thư mục tạm để lưu file
+UPLOAD_FOLDER = 'temp_files'
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+@app.route('/api/prompt', methods=['POST'])
+async def handle_prompt():
+    try:
+        # Lấy dữ liệu JSON từ request
+        data = request.get_json()
+        if not data or 'prompt' not in data:
+            return jsonify({
+                'error': 'Missing prompt in request body',
+                'status': 'error'
+            }), 400
+
+        prompt = data['prompt'].strip()
+        if not prompt:
+            logger.warning("Empty prompt provided")
+            return jsonify({
+                'error': 'Prompt cannot be empty',
+                'status': 'error'
+            }), 400
+
+        logger.info(f"Received prompt: {prompt}")
+        
+        # Chạy agent với prompt và chờ kết quả
+        logger.warning("Processing request...")
+        response = await agent.run(prompt)
+        logger.info("Request processing completed")
+
+        # Kiểm tra response để tìm file được tạo
+        download_url = None
+        if isinstance(response, str):
+            # Tìm tên file trong log với các định dạng .txt, .xlsx, .csv, .html
+            file_match = re.search(
+                r"Content successfully saved to (.+?\.(txt|xlsx|csv|html))", 
+                response
+            )
+            if file_match:
+                file_name = file_match.group(1)  # Lấy tên file, ví dụ: file.txt, file.xlsx, v.v.
+                original_path = file_name  # Giả định file được lưu ở thư mục hiện tại
+                if os.path.exists(original_path):
+                    # Tạo tên file duy nhất và di chuyển đến UPLOAD_FOLDER
+                    unique_file_name = f"{uuid.uuid4()}_{file_name}"
+                    new_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_file_name)
+                    os.rename(original_path, new_path)
+                    download_url = f"/download/{unique_file_name}"
+                    response = f"File generated: {file_name}"
+
+        # Trả về response dưới dạng JSON
+        response_data = {
+            'response': response,
+            'status': 'success'
+        }
+        if download_url:
+            response_data['download_url'] = download_url
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logger.error(f"Error processing request: {str(e)}")
+        return jsonify({
+            'error': f'Internal server error: {str(e)}',
+            'status': 'error'
+        }), 500
+
+@app.route('/download/<filename>', methods=['GET'])
+def download_file(filename):
+    try:
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+    except FileNotFoundError:
+        return jsonify({
+            'error': 'File not found',
+            'status': 'error'
+        }), 404
+
+def run_app():
+    # Chạy Flask app với asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.run(host='0.0.0.0', port=5000))
+
+if __name__ == '__main__':
+    run_app()
