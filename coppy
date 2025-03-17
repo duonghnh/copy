@@ -25,15 +25,19 @@ def process_agent_output(output):
     
     if isinstance(output, list):
         for step in output:
-            if "Observed output of cmd `terminate` executed" in str(step):
-                if "status: success" in str(step):
+            step_str = str(step)
+            if "Observed output of cmd `terminate` executed" in step_str:
+                if "status: success" in step_str:
                     final_result["status"] = "success"
-            if "Content successfully saved to" in str(step):
-                file_name = str(step).split("saved to")[-1].strip().replace("'", "")
+            if "Content successfully saved to" in step_str:
+                file_name = step_str.split("saved to")[-1].strip().replace("'", "")
                 if os.path.exists(file_name):
                     final_result["file_path"] = file_name
-                    with open(file_name, 'r', encoding='utf-8') as f:
-                        final_result["content"] = f.read()
+                    try:
+                        with open(file_name, 'r', encoding='utf-8') as f:
+                            final_result["content"] = f.read()
+                    except Exception as e:
+                        final_result["content"] = f"Error reading file: {str(e)}"
                 else:
                     final_result["content"] = "Result file not found"
     elif isinstance(output, str):
@@ -45,14 +49,17 @@ def process_agent_output(output):
 
 # Định nghĩa route API xử lý prompt
 @app.route('/api/process', methods=['POST'])
-def process_prompt():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
+async def process_prompt():
     try:
         data = request.get_json()
-        prompt = data.get('prompt', '').strip()
+        if not data or 'prompt' not in data:
+            logger.warning("Invalid or missing prompt data.")
+            return jsonify({
+                'status': 'error',
+                'message': 'Prompt is required'
+            }), 400
 
+        prompt = data['prompt'].strip()
         if not prompt:
             logger.warning("Empty prompt provided.")
             return jsonify({
@@ -60,8 +67,9 @@ def process_prompt():
                 'message': 'Prompt cannot be empty'
             }), 400
 
-        logger.warning("Processing your request...")
-        result = loop.run_until_complete(agent.run(prompt))
+        logger.info("Processing your request...")
+        # Chạy agent.run bất đồng bộ
+        result = await agent.run(prompt)
         logger.info("Request processing completed.")
         
         final_result = process_agent_output(result)
@@ -92,8 +100,6 @@ def process_prompt():
             'status': 'error',
             'message': f'Error: {str(e)}'
         }), 500
-    finally:
-        loop.close()
 
 # Định nghĩa route để tải file
 @app.route('/api/download/<filename>', methods=['GET'])
@@ -107,6 +113,10 @@ def download_file(filename):
             'message': 'File not found'
         }), 404
 
-# Chạy Flask app
+# Chạy Flask app với cấu hình SSL
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    ssl_context = (
+        'C:/Program Files/OpenSSL-Win64/bin/fullchain.pem',
+        'C:/Program Files/OpenSSL-Win64/bin/private.pem'
+    )
+    app.run(ssl_context=ssl_context, host='0.0.0.0', port=443, threaded=True)
