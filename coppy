@@ -1,59 +1,20 @@
-import asyncio
-import os
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+from flask import Flask, request, jsonify
 from app.agent.manus import Manus
 from app.logger import logger
+import asyncio
 
-# Khởi tạo Flask app
 app = Flask(__name__)
-CORS(app, resources={
-    r"/api/*": {
-        "origins": "*",
-        "methods": ["OPTIONS", "POST"],
-        "allow_headers": ["Content-Type", "Authorization", "Accept"],
-        "supports_credentials": True
-    }
-})
 
-# Khởi tạo Manus agent
+# Khởi tạo agent một lần khi server khởi động
 agent = Manus()
 
-# Hàm xử lý output từ agent.run để lấy kết quả cuối cùng
-def process_agent_output(output):
-    final_result = {"status": "unknown", "content": "", "file_path": None}
-    
-    if isinstance(output, list):
-        for step in output:
-            step_str = str(step)
-            if "Observed output of cmd `terminate` executed" in step_str:
-                if "status: success" in step_str:
-                    final_result["status"] = "success"
-            if "Content successfully saved to" in step_str:
-                file_name = step_str.split("saved to")[-1].strip().replace("'", "")
-                if os.path.exists(file_name):
-                    final_result["file_path"] = file_name
-                    try:
-                        with open(file_name, 'r', encoding='utf-8') as f:
-                            final_result["content"] = f.read()
-                    except Exception as e:
-                        final_result["content"] = f"Error reading file: {str(e)}"
-                else:
-                    final_result["content"] = "Result file not found"
-    elif isinstance(output, str):
-        if "status: success" in output:
-            final_result["status"] = "success"
-        final_result["content"] = output
-    
-    return final_result
-
-# Định nghĩa route API xử lý prompt
 @app.route('/api/process', methods=['POST'])
 async def process_prompt():
     try:
+        # Lấy dữ liệu từ request
         data = request.get_json()
         if not data or 'prompt' not in data:
-            logger.warning("Invalid or missing prompt data.")
+            logger.warning("No prompt provided in request")
             return jsonify({
                 'status': 'error',
                 'message': 'Prompt is required'
@@ -61,62 +22,35 @@ async def process_prompt():
 
         prompt = data['prompt'].strip()
         if not prompt:
-            logger.warning("Empty prompt provided.")
+            logger.warning("Empty prompt provided")
             return jsonify({
                 'status': 'error',
                 'message': 'Prompt cannot be empty'
             }), 400
 
-        logger.info("Processing your request...")
-        # Chạy agent.run bất đồng bộ
+        logger.info(f"Received prompt: {prompt}")
+        logger.warning("Processing request...")
+
+        # Chạy agent với prompt
         result = await agent.run(prompt)
-        logger.info("Request processing completed.")
-        
-        final_result = process_agent_output(result)
-        print("Raw result from agent:", result)
-        print("Processed final result:", final_result)
-        
-        if final_result["status"] == "success":
-            response = {
-                'status': 'success',
-                'message': 'Request processed successfully',
-                'result': final_result["content"]
-            }
-            # Thêm link tải file nếu file tồn tại
-            if final_result["file_path"]:
-                file_url = f"http://{request.host}/api/download/{os.path.basename(final_result['file_path'])}"
-                response["file_url"] = file_url
-            return jsonify(response), 200
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': 'Processing failed or no valid result',
-                'result': final_result["content"]
-            }), 400
+
+        logger.info("Request processing completed")
+        return jsonify({
+            'status': 'success',
+            'data': result
+        }), 200
 
     except Exception as e:
-        logger.error(f"Error processing request: {e}")
+        logger.error(f"Error processing request: {str(e)}")
         return jsonify({
             'status': 'error',
-            'message': f'Error: {str(e)}'
+            'message': f"An error occurred: {str(e)}"
         }), 500
 
-# Định nghĩa route để tải file
-@app.route('/api/download/<filename>', methods=['GET'])
-def download_file(filename):
-    file_path = os.path.join(os.getcwd(), filename)
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': 'File not found'
-        }), 404
+def run_app():
+    # Chạy Flask app với asyncio
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
-# Chạy Flask app với cấu hình SSL
 if __name__ == "__main__":
-    ssl_context = (
-        'C:/Program Files/OpenSSL-Win64/bin/fullchain.pem',
-        'C:/Program Files/OpenSSL-Win64/bin/private.pem'
-    )
-    app.run(ssl_context=ssl_context, host='0.0.0.0', port=443, threaded=True)
+    # Sử dụng asyncio để chạy Flask app
+    asyncio.run(run_app())
